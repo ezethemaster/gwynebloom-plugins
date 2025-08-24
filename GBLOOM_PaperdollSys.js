@@ -1,9 +1,9 @@
 //=============================================================================
-// PaperDoll System - Gwenbloom (Version 1)
+// PaperDoll System - Gwenbloom (Version 1 - I Hate the Message Window Logic)
 //=============================================================================
 
 /*:
- * @plugindesc [Paperdoll VN System] Sistema de personajes VN por capas con 10 tipos fijos (posición y escala), movimiento animado y control de opacidad.
+ * @plugindesc [Paperdoll VN System] Layered VN Character System.
  * @author Gwenbloom
  *
  * @param Type1
@@ -163,13 +163,15 @@
         constructor(typeId, layers) {
             super();
             this.typeId = typeId;
-            this.layers = {};
+            this.layers = [];
             this.offsetX = 0;
             this.offsetY = 0;
             this.opacity = DefaultOpacity;
+            this._drawOverMessage = false;
 
             this._moveAnim = null;
             this._opacityAnim = null;
+            this._scaleAnim = null;
 
             if (!PaperdollTypes[typeId]) {
                 console.error(`Paperdoll Error: Type ID ${typeId} is not defined in plugin parameters.`);
@@ -187,11 +189,8 @@
             this.scale.y = config.scaleY;
 
             const files = layers.split(",").map(f => f.trim());
-            files.forEach((filename, i) => {
-                const name = filename.replace(/\.png$/i, '');
-                const sprite = new Sprite(ImageManager.loadBitmap("img/paperdoll/", name));
-                this.addChild(sprite);
-                this.layers[`layer${i}`] = sprite;
+            files.forEach(filename => {
+                this.addLayer(filename);
             });
         }
 
@@ -199,6 +198,8 @@
             super.update();
             this.updateMoveAnimation();
             this.updateOpacityAnimation();
+            this.updateScaleAnimation();
+            this.updateZIndex();
         }
 
         updateMoveAnimation() {
@@ -232,6 +233,28 @@
             if (this._opacityAnim.currentFrame > this._opacityAnim.duration) {
                 this.opacity = this._opacityAnim.endOpacity;
                 this._opacityAnim = null;
+            }
+        }
+
+        updateScaleAnimation() {
+            if (!this._scaleAnim) return;
+
+            const t = this._scaleAnim.currentFrame / this._scaleAnim.duration;
+            const easedProgress = Easing.Linear(t);
+
+            if (this._scaleAnim.endScaleX !== null) {
+                this.scale.x = this._scaleAnim.startScaleX + (this._scaleAnim.endScaleX - this._scaleAnim.startScaleX) * easedProgress;
+            }
+            if (this._scaleAnim.endScaleY !== null) {
+                this.scale.y = this._scaleAnim.startScaleY + (this._scaleAnim.endScaleY - this._scaleAnim.startScaleY) * easedProgress;
+            }
+
+            this._scaleAnim.currentFrame++;
+
+            if (this._scaleAnim.currentFrame > this._scaleAnim.duration) {
+                if (this._scaleAnim.endScaleX !== null) this.scale.x = this._scaleAnim.endScaleX;
+                if (this._scaleAnim.endScaleY !== null) this.scale.y = this._scaleAnim.endScaleY;
+                this._scaleAnim = null;
             }
         }
 
@@ -275,45 +298,124 @@
             }
         }
 
-        updateLayer(layerIndex, newFileName) {
-            const sprite = this.layers[`layer${layerIndex}`];
-            const name = newFileName.replace(/\.png$/i, '');
-            if (sprite) {
-                sprite.bitmap = ImageManager.loadBitmap("img/paperdoll/", name);
+        changeScale(targetScaleX, targetScaleY, duration) {
+            if (duration > 0) {
+                this._scaleAnim = {
+                    startScaleX: this.scale.x,
+                    startScaleY: this.scale.y,
+                    endScaleX: targetScaleX,
+                    endScaleY: targetScaleY,
+                    duration: duration,
+                    currentFrame: 0
+                };
             } else {
-                const newSprite = new Sprite(ImageManager.loadBitmap("img/paperdoll/", name));
-                this.addChild(newSprite);
-                this.layers[`layer${layerIndex}`] = newSprite;
+                this.scale.x = targetScaleX;
+                this.scale.y = targetScaleY;
+                this._scaleAnim = null;
+            }
+        }
+
+        addLayer(newFileName) {
+            const name = newFileName.replace(/\.png$/i, '');
+            const sprite = new Sprite(ImageManager.loadBitmap("img/paperdoll/", name));
+            this.addChild(sprite);
+            this.layers.push(sprite);
+        }
+
+        insertLayer(index, newFileName) {
+            const name = newFileName.replace(/\.png$/i, '');
+            const sprite = new Sprite(ImageManager.loadBitmap("img/paperdoll/", name));
+
+            if (index >= 0 && index <= this.layers.length) {
+                this.layers.splice(index, 0, sprite);
+                this.addChild(sprite);
+                this.reorderLayers();
+            } else {
+                console.warn(`InsertPaperdollLayer: Index ${index} is out of bounds. Adding to the end.`);
+                this.addLayer(newFileName);
+            }
+        }
+
+        reorderLayers() {
+            this.layers.forEach((sprite, index) => {
+                this.setChildIndex(sprite, index);
+            });
+        }
+
+        updateLayer(layerIndex, newFileName) {
+            const index = layerIndex - 1; // Convert to 0-based index
+            if (index >= 0 && index < this.layers.length) {
+                const sprite = this.layers[index];
+                const name = newFileName.replace(/\.png$/i, '');
+                if (sprite) {
+                    sprite.bitmap = ImageManager.loadBitmap("img/paperdoll/", name);
+                }
+            } else {
+                this.addLayer(newFileName);
+            }
+        }
+
+        removeLayer(layerIndex) {
+            const index = layerIndex - 1; // Convert to 0-based index
+            if (index >= 0 && index < this.layers.length) {
+                const spriteToRemove = this.layers[index];
+                if (spriteToRemove) {
+                    this.removeChild(spriteToRemove);
+                    this.layers.splice(index, 1);
+                }
+            } else {
+                console.warn(`RemovePaperdollLayer: Layer index ${layerIndex} is out of bounds.`);
+            }
+        }
+
+        reparent() {
+            const scene = SceneManager._scene;
+            if (!scene) return;
+
+            let newParent = scene.children.find(c => c instanceof Spriteset_Map) || scene;
+
+            if (this._drawOverMessage) {
+                newParent = scene._windowLayer;
+            }
+
+            if (this.parent !== newParent) {
+                if (this.parent) {
+                    this.parent.removeChild(this);
+                }
+                newParent.addChild(this);
+            }
+        }
+
+        updateZIndex() {
+            if (this.parent === SceneManager._scene._windowLayer) {
+                const messageWindow = SceneManager._scene._messageWindow;
+                if (messageWindow) {
+                    const messageIndex = this.parent.children.indexOf(messageWindow);
+                    if (messageIndex !== -1) {
+                        const newIndex = this._drawOverMessage ? messageIndex + 1 : messageIndex;
+                        this.parent.setChildIndex(this, newIndex);
+                    }
+                }
             }
         }
     }
-
-    const _Scene_Map_createDisplayObjects = Scene_Map.prototype.createDisplayObjects;
-    Scene_Map.prototype.createDisplayObjects = function () {
-        _Scene_Map_createDisplayObjects.call(this);
-        if (!this._paperdollContainer) {
-            this._paperdollContainer = new Sprite();
-            this.addChild(this._paperdollContainer);
-        }
-    };
 
     const _Game_Interpreter_pluginCommand = Game_Interpreter.prototype.pluginCommand;
     Game_Interpreter.prototype.pluginCommand = function (command, args) {
         _Game_Interpreter_pluginCommand.call(this, command, args);
 
         const typeId = Number(args[0]);
-        let layers = args.slice(1).join(" ");
         let duration;
 
         switch (command) {
             case "ShowPaperdoll":
+                const layers = args.slice(1).join(" ");
                 if (paperdolls[typeId]) {
                     paperdolls[typeId].parent.removeChild(paperdolls[typeId]);
                 }
                 const sprite = new PaperdollSprite(typeId, layers);
-                const container = SceneManager._scene._paperdollContainer || SceneManager._scene;
-                container.addChild(sprite);
                 paperdolls[typeId] = sprite;
+                sprite.reparent();
                 break;
             case "ClearPaperdoll":
                 if (paperdolls[typeId] && paperdolls[typeId].parent) {
@@ -323,13 +425,29 @@
                 break;
             case "UpdatePaperdoll":
                 if (paperdolls[typeId]) {
-                    for (let i = 1; i < args.length; i += 2) {
-                        const layerIndex = Number(args[i]);
-                        const newFile = args[i + 1];
-                        if (newFile !== undefined) {
-                            paperdolls[typeId].updateLayer(layerIndex, newFile);
-                        }
+                    const layerIndex = Number(args[1]);
+                    const newFile = args[2];
+                    if (newFile !== undefined) {
+                        paperdolls[typeId].updateLayer(layerIndex, newFile);
                     }
+                }
+                break;
+            case "AddPaperdollLayer":
+            case "PaperdollNewLayer":
+                if (paperdolls[typeId]) {
+                    if (args.length === 2) {
+                        paperdolls[typeId].addLayer(args[1]);
+                    } else if (args.length === 3) {
+                        const layerIndex = Number(args[1]);
+                        const newFile = args[2];
+                        paperdolls[typeId].insertLayer(layerIndex - 1, newFile);
+                    }
+                }
+                break;
+            case "RemovePaperdollLayer":
+                if (paperdolls[typeId]) {
+                    const layerIndex = Number(args[1]);
+                    paperdolls[typeId].removeLayer(layerIndex);
                 }
                 break;
             case "MovePaperdoll":
@@ -370,7 +488,6 @@
                     paperdolls[typeId].changeOpacity(newOpacity, duration);
                 }
                 break;
-            // --- New and corrected Slide Commands ---
             case "PaperdollSlideIn":
             case "PaperdollSlideInFromLeft":
             case "PaperdollSlideInFromRight":
@@ -387,14 +504,12 @@
                         dx = moveAmount;
                     }
 
-                    // Reset to the default position + the slide offset before starting the animation
                     paperdoll.x = config.defaultX + dx;
                     paperdoll.y = config.defaultY;
                     paperdoll.opacity = 0;
                     paperdoll.offsetX = dx;
                     paperdoll.offsetY = 0;
 
-                    // Now, animate back to the original position
                     paperdoll.move(-dx, 0, duration, "OutQuad");
                     paperdoll.changeOpacity(255, duration);
                 } else {
@@ -415,11 +530,65 @@
                         dx = moveAmount;
                     }
 
-                    // Animate the paperdoll to the new position
                     paperdoll.move(dx, 0, duration, "OutQuad");
                     paperdoll.changeOpacity(0, duration);
                 } else {
                     console.warn(`PaperdollSlideOut: No paperdoll found for type ID ${typeId}. It may have been cleared already.`);
+                }
+                break;
+            case "PaperdollScaleTo":
+            case "PaperdollScaleToX":
+            case "PaperdollScaleToY":
+                if (paperdolls[typeId]) {
+                    const paperdoll = paperdolls[typeId];
+                    const targetScale = Number(args[1]);
+                    const duration = Number(args[2]) || DefaultFadeDuration;
+                    let targetX = paperdoll.scale.x;
+                    let targetY = paperdoll.scale.y;
+
+                    if (command === "PaperdollScaleTo") {
+                        targetX = targetScale;
+                        targetY = targetScale;
+                    } else if (command === "PaperdollScaleToX") {
+                        targetX = targetScale;
+                    } else if (command === "PaperdollScaleToY") {
+                        targetY = targetScale;
+                    }
+                    paperdoll.changeScale(targetX, targetY, duration);
+                } else {
+                    console.warn(`PaperdollScaleTo: No paperdoll found for type ID ${typeId}.`);
+                }
+                break;
+            case "PaperdollScaleBy":
+            case "PaperdollScaleByX":
+            case "PaperdollScaleByY":
+                if (paperdolls[typeId]) {
+                    const paperdoll = paperdolls[typeId];
+                    const scaleChange = Number(args[1]);
+                    const duration = Number(args[2]) || DefaultFadeDuration;
+                    let targetX = paperdoll.scale.x;
+                    let targetY = paperdoll.scale.y;
+
+                    if (command === "PaperdollScaleBy") {
+                        targetX += scaleChange;
+                        targetY += scaleChange;
+                    } else if (command === "PaperdollScaleByX") {
+                        targetX += scaleChange;
+                    } else if (command === "PaperdollScaleByY") {
+                        targetY += scaleChange;
+                    }
+                    paperdoll.changeScale(targetX, targetY, duration);
+                } else {
+                    console.warn(`PaperdollScaleBy: No paperdoll found for type ID ${typeId}.`);
+                }
+                break;
+            case "PaperdollOverTheWindow":
+                const overWindow = (args[0] === 'true');
+                for (const id in paperdolls) {
+                    if (paperdolls.hasOwnProperty(id)) {
+                        paperdolls[id]._drawOverMessage = overWindow;
+                        paperdolls[id].reparent();
+                    }
                 }
                 break;
         }
